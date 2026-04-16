@@ -47,12 +47,17 @@ class DoubleConv(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             # 第一次卷积
+            # padding=1 保证特征图尺寸不变（same卷积）
+            
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            # 把这一层输出的数据强行拉回到均值为 0、方差为 1 的标准分布。
             nn.BatchNorm2d(out_channels),
+            # 非线性激活：把所有负数变成 0
             nn.ReLU(inplace=True),
             # 第二次卷积
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
+            # inplace=True 原地修改极大地节省了显存
             nn.ReLU(inplace=True),
         )
 
@@ -76,6 +81,8 @@ class EncoderBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
         self.conv = DoubleConv(in_channels, out_channels)
+        # kernel_size=2 意味着它每次看一个 2×2（共 4 个像素）的小格子。
+        # stride=2 意味着它每次向右或向下跳 2 个像素（正好跳过刚才看过的格子，不重复）
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
     def forward(self, x: torch.Tensor):
@@ -145,6 +152,7 @@ class UNet(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
+        # 网络的宽度（即特征提取的能力）
         base_ch: int = 64,
     ) -> None:
         super().__init__()
@@ -180,13 +188,19 @@ class UNet(nn.Module):
 
     def _init_weights(self) -> None:
         """使用 Kaiming Normal 初始化所有卷积层权重。"""
+        # 递归地遍历网络中定义的所有层（卷积层、池化层、BN 层等）
         for m in self.modules():
+            # 判断当前这个层是不是普通卷积（用来提取特征）或者转置卷积（用来放大图片）
             if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                # 如果卷积层有“偏置项”（Bias），就把它们全部设为 0。
+                # 目的：让模型一开始先专注于学习“特征提取”（权重），别乱加偏移。
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.BatchNorm2d):
+                # 将缩放系数（Scale）初始化为 1
                 nn.init.ones_(m.weight)
+                # 将偏移量（Shift）初始化为 0
                 nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -223,6 +237,8 @@ class UNet(nn.Module):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # 输入和输出通道设为 3
     model = UNet(in_channels=3, out_channels=3).to(device)
 
     # 统计参数量

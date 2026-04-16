@@ -18,8 +18,8 @@
 """
 
 import os
-from pathlib import Path
-from PIL import Image
+from pathlib import Path    # 用于更现代、简洁地处理文件路径
+from PIL import Image   # Python 图像处理标准库，用于读取图片
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -90,8 +90,11 @@ class UnderwaterDataset(Dataset):
         # 使用 [-1,1] 归一化（均值=0.5，标准差=0.5）更有利于 tanh 激活稳定训练；
         # 若最终输出层使用 sigmoid，改为 [0,1] 即去掉 Normalize 也可。
         shared_transforms = [
+            # BICUBIC（双三次插值）是一种高质量的缩放算法，相比普通缩放，它能更好地保留水下图像的边缘细节
             T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BICUBIC),
+            
             T.ToTensor(),                          # PIL [0,255] → Tensor [0.0, 1.0]
+            # 将[0, 1]的范围进一步拉伸到[-1, 1]
             T.Normalize(mean=[0.5, 0.5, 0.5],      # [0,1] → [-1, 1]
                         std=[0.5, 0.5, 0.5]),
         ]
@@ -119,6 +122,9 @@ class UnderwaterDataset(Dataset):
         target_path = self.target_dir / input_path.name
 
         # 以 RGB 模式读取（忽略 Alpha 通道）
+        # convert("RGB") 非常重要，它能把灰度
+        # 图或带透明通道的 PNG 统一转成标准的红绿蓝
+        #  3 通道图，避免模型报错
         input_img = Image.open(input_path).convert("RGB")
         target_img = Image.open(target_path).convert("RGB")
 
@@ -179,6 +185,7 @@ def build_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,       # 加速 CPU→GPU 数据传输
+        # 丢弃余数
         drop_last=False,
     )
     return loader

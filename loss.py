@@ -177,6 +177,7 @@ class HybridLoss(nn.Module):
             kernel_size=kernel_size,
             sigma=sigma,
             data_range=data_range,
+            # RGB 三通道
             channels=3,
         )
 

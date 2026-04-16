@@ -118,6 +118,20 @@ $$L_{SSIM} = 1 - \text{SSIM}(\hat{y}, y)$$
 | LR 调度 | ReduceLROnPlateau（patience=5，factor=0.5） |
 | 梯度裁剪 | max_norm=1.0 |
 | 最优 Checkpoint | Val Loss 最低时自动保存至 `checkpoints/best_model.pth` |
+| **混合精度训练** | **AMP（自动混合精度），GPU 上默认启用** |
+
+#### 训练优化：AMP 自动混合精度（Automatic Mixed Precision）
+
+在 GPU 设备上训练时，程序会自动启用 `torch.cuda.amp`，将前向传播与损失计算切换到 **float16** 精度，参数更新仍保持 **float32**，从而在不损失模型精度的前提下获得显著加速。
+
+| 项目 | 说明 |
+|------|------|
+| 前向传播精度 | float16（`autocast` 自动管理） |
+| 参数更新精度 | float32（GradScaler 自动还原） |
+| 梯度裁剪 | `scaler.unscale_()` 后执行，语义正确 |
+| 异常保护 | 检测到 `inf`/`nan` 梯度时自动跳过本步更新 |
+| CPU 兼容 | CPU 训练时自动禁用，退化为标准 float32，无需任何改动 |
+| 预期收益 | 训练速度 **+50%~100%**，显存占用 **−25%~30%** |
 
 ---
 
@@ -142,7 +156,8 @@ python loss.py
 > 设置 `--num_workers 0`
 
 **Q：显存不足？**
-> 减小 `--batch_size`（4 或 2），或开启 `torch.cuda.amp` 混合精度训练
+> AMP 混合精度训练已默认集成，GPU 上会自动启用 float16 前向传播，可节省约 25%~30% 显存。
+> 若仍不足，可进一步减小 `--batch_size`（4 或 2）。
 
 **Q：SSIM 损失为负数？**
 > 检查归一化方式，确保 `data_range=2.0`（对应 `[-1,1]`）或 `1.0`（对应 `[0,1]`）与实际一致

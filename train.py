@@ -25,6 +25,7 @@ from pathlib import Path
 
 import torch
 import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast   # AMP 混合精度
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.utils import save_image
 from PIL import Image
@@ -144,7 +145,6 @@ def train(config: dict) -> None:
         mode="min",
         factor=0.5,
         patience=5,
-        verbose=True,
     )
 
     # 混合损失函数
@@ -152,6 +152,16 @@ def train(config: dict) -> None:
         ssim_weight=config["ssim_weight"],
         data_range=2.0,   # 归一化范围 [-1,1]
     ).to(device)
+
+    # -- AMP 初始化 -------------------------------------------------------
+    # 仅在 CUDA 设备上启用 AMP；CPU 训练时 enabled=False 退化为普通 float32，
+    # 不会引发任何兼容性问题。
+    use_amp = (device.type == "cuda")
+    scaler  = GradScaler(enabled=use_amp)
+    if use_amp:
+        print("[Train] AMP 混合精度已启用 (float16 前向 + float32 参数更新)")
+    else:
+        print("[Train] CPU 模式：AMP 已跳过，使用标准 float32 训练")
 
     # ── 训练循环 ──────────────────────────────────────────────────────────
     print(f"\n[Train] 开始训练，共 {config['max_epochs']} 个 Epoch\n" + "─" * 60)
@@ -169,19 +179,25 @@ def train(config: dict) -> None:
 
             optimizer.zero_grad()
 
-            # 前向传播
-            preds = model(inputs)                  # [B, 3, 256, 256]
+            # -- AMP 前向传播（float16 计算，自动降低显存）------------------
+            with autocast(enabled=use_amp):
+                preds = model(inputs)              # [B, 3, 256, 256]
+                loss, loss_dict = criterion(preds, targets)
 
-            # 混合损失计算
-            loss, _ = criterion(preds, targets)
+            # -- AMP 反向传播 -----------------------------------------------
+            # scaler.scale() 将 loss 放大以防止 float16 梯度下溢
+            scaler.scale(loss).backward()
 
-            # 反向传播与梯度更新
-            loss.backward()
-
-            # 梯度裁剪（防止梯度爆炸）
+            # unscale_ 必须在 clip_grad_norm_ 之前调用，
+            # 否则裁剪的是"放大后"的梯度，max_norm 语义会失真
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-            optimizer.step()
+            # scaler.step() 内部自动检测梯度是否为 inf/nan：
+            #   若正常 -> 等价于 optimizer.step()
+            #   若异常 -> 跳过本步更新（不会污染模型权重）
+            scaler.step(optimizer)
+            scaler.update()   # 动态调整 loss 放大系数
 
             train_loss_sum += loss.item()
 
@@ -219,10 +235,12 @@ def train(config: dict) -> None:
         # 当前 epoch 耗时
         elapsed = time.time() - t0
 
+        current_lr = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch [{epoch:4d}/{config['max_epochs']}]  "
             f"Train Loss: {avg_train_loss:.6f}  "
             f"Val Loss: {avg_val_loss:.6f}  "
+            f"LR: {current_lr:.2e}  "
             f"Time: {elapsed:.1f}s"
         )
 
